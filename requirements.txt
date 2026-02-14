@@ -1,0 +1,6 @@
+# Python dependencies for Culver's data pipeline scripts
+# These are automatically installed in Airflow containers via docker-compose.yaml
+
+requests>=2.31.0
+pandas>=2.0.0
+tqdm>=4.65.0
