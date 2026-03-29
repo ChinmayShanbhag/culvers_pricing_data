@@ -1,35 +1,36 @@
-import os
+"""
+Export all per-store menu JSON files into a single culvers_full.json.
+
+Previously this script pulled from MongoDB. Now it reads the local
+data/menus/*.json files written by master_hydrator.py.
+"""
+
 import json
-from pymongo import MongoClient
-from dotenv import load_dotenv
-from bson import json_util
+from pathlib import Path
 
-load_dotenv()
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+MENU_DIR = DATA_DIR / "menus"
 
-def download_full_database():
-    uri = os.getenv("MONGO_URI")
-    db_name = os.getenv("MONGO_DB_NAME", "culvers_db")
-    
-    print(f"Connecting to {db_name}...")
-    client = MongoClient(uri)
-    db = client[db_name]
-    collection = db["stores"]
 
-    # Fetch all documents
-    cursor = collection.find({})
-    
-    # MongoDB documents contain special types (like ObjectIDs)
-    # json_util ensures these are converted to readable strings
-    all_data = list(cursor)
-    
-    output_file = "data/culvers_full.json"
-    
+def export_full_database():
+    if not MENU_DIR.exists():
+        print("No menu data found. Run master_hydrator.py first.")
+        return
+
+    all_data = []
+    for path in sorted(MENU_DIR.glob("*.json")):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                all_data.append(json.load(f))
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Skipping {path.name}: {e}")
+
+    output_file = DATA_DIR / "culvers_full.json"
     with open(output_file, "w", encoding="utf-8") as f:
-        # indent=2 makes the file human-readable
-        json.dump(all_data, f, default=json_util.default, indent=2)
+        json.dump(all_data, f, indent=2, default=str)
 
-    print(f"✅ Success! Exported {len(all_data)} stores to {output_file}")
-    client.close()
+    print(f"Exported {len(all_data)} stores to {output_file}")
+
 
 if __name__ == "__main__":
-    download_full_database()
+    export_full_database()

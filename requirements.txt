@@ -1,6 +1,11 @@
-# Python dependencies for Culver's data pipeline scripts
-# These are automatically installed in Airflow containers via docker-compose.yaml
+# Python dependencies for Culver's data pipeline and web interface
 
+# Data pipeline
 requests>=2.31.0
 pandas>=2.0.0
 tqdm>=4.65.0
+
+# Web interface
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+httpx>=0.27.0

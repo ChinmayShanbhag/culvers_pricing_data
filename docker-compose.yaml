@@ -338,5 +338,16 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  culvers-web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/data:/app/data:ro
+      - ${AIRFLOW_PROJ_DIR:-.}/web:/app/web:ro
+    restart: always
+
 volumes:
   postgres-db-volume:

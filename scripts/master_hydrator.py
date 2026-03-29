@@ -1,120 +1,117 @@
 import os
 import re
+import json
 import requests
 import pandas as pd
-from pymongo import MongoClient
-from dotenv import load_dotenv
 from tqdm import tqdm
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
-# Import your script functions
 from get_categories import get_categories
 from get_category_items import get_category_items
 from get_item_details import get_item_details
 
-load_dotenv()
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+MENU_DIR = DATA_DIR / "menus"
+
 
 def get_current_build_id():
     try:
         response = requests.get("https://www.culvers.com/menu", timeout=10)
         match = re.search(r'"buildId":"(.*?)"', response.text)
         return match.group(1) if match else "h9DkZVoSWXYTzy8Ax-etC"
-    except:
+    except Exception:
         return "h9DkZVoSWXYTzy8Ax-etC"
 
-def get_mongo_client():
-    uri = os.getenv("MONGO_URI")
+
+def load_existing_store(olo_id: int) -> dict | None:
+    path = MENU_DIR / f"{olo_id}.json"
+    if not path.exists():
+        return None
     try:
-        client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-        return client
-    except:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
         return None
 
-def process_single_store(row, current_build, db_name):
-    """Function to process one store entirely."""
-    client = get_mongo_client()
-    if not client: return False
-    
-    collection = client[db_name]["stores"]
-    oloId = int(row['oloId'])
-    current_date = datetime.now().strftime('%Y-%m-%d')
 
-    # --- 1. SKIP LOGIC ---
-    # Check if a document exists for this oloId updated TODAY
-    existing = collection.find_one({
-        "oloId": oloId, 
-        "last_updated": {"$regex": f"^{current_date}"}
-    }, {"_id": 1})
-    
-    if existing:
-        client.close()
-        return f"Skipped {oloId} (Already updated today)"
+def save_store(doc: dict):
+    MENU_DIR.mkdir(parents=True, exist_ok=True)
+    path = MENU_DIR / f"{doc['oloId']}.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2, default=str)
 
-    # --- 2. SCRAPING LOGIC ---
+
+def process_single_store(row, current_build: str) -> str:
+    olo_id = int(row["oloId"])
+    current_date = datetime.now().strftime("%Y-%m-%d")
+
+    existing = load_existing_store(olo_id)
+    if existing and existing.get("last_updated", "").startswith(current_date):
+        return f"Skipped {olo_id} (Already updated today)"
+
     master_doc = {
-        "oloId": oloId,
+        "oloId": olo_id,
         "metadata": row.to_dict(),
         "last_updated": datetime.now().isoformat(),
         "build_id": current_build,
-        "menu": []
+        "menu": [],
     }
 
     try:
-        categories = get_categories(oloId, build_id=current_build)
+        categories = get_categories(olo_id, build_id=current_build)
         for cat in categories:
-            cat_node = {"categoryName": cat['categoryName'], "categorySlug": cat['categorySlug'], "items": []}
-            items_list = get_category_items(oloId, cat['categorySlug'], build_id=current_build)
-            
-            # Parallel Item Fetching
+            cat_node = {
+                "categoryName": cat["categoryName"],
+                "categorySlug": cat["categorySlug"],
+                "items": [],
+            }
+            items_list = get_category_items(olo_id, cat["categorySlug"], build_id=current_build)
+
             with ThreadPoolExecutor(max_workers=16) as item_exec:
                 futures = {
-                    item_exec.submit(get_item_details, oloId, cat['categorySlug'], item['itemSlug'], current_build): item 
+                    item_exec.submit(
+                        get_item_details, olo_id, cat["categorySlug"], item["itemSlug"], current_build
+                    ): item
                     for item in items_list
                 }
                 for future in as_completed(futures):
                     res = future.result()
-                    if res: cat_node["items"].append(res)
-            
+                    if res:
+                        cat_node["items"].append(res)
+
             master_doc["menu"].append(cat_node)
-            
-        collection.update_one({"oloId": oloId}, {"$set": master_doc}, upsert=True)
-        client.close()
-        return f"Completed {oloId}"
-    
+
+        save_store(master_doc)
+        return f"Completed {olo_id}"
+
     except Exception as e:
-        client.close()
-        return f"Error on {oloId}: {str(e)}"
+        return f"Error on {olo_id}: {str(e)}"
+
 
 def hydrate_store_menus():
-    # Setup
-    db_name = os.getenv("MONGO_DB_NAME", "culvers_db")
-    df_locations = pd.read_csv('data/stores.csv')
-    df_details = pd.read_csv('data/store_details.csv')
-    full_info = pd.merge(df_locations, df_details, on='oloId', how='left')
-    full_info = full_info.replace({pd.NA: None, float('nan'): None})
+    df_locations = pd.read_csv(DATA_DIR / "stores.csv")
+    df_details = pd.read_csv(DATA_DIR / "store_details.csv")
+    full_info = pd.merge(df_locations, df_details, on="oloId", how="left")
+    full_info = full_info.replace({pd.NA: None, float("nan"): None})
 
     current_build = get_current_build_id()
-    
-    # --- 3. PARALLEL STORE PROCESSING ---
-    # We process 8 stores at a time (each store handles its own item threads)
-    # Total concurrency = 8 stores * 16 items = 128 concurrent HTTP requests
     max_store_workers = 8
-    
+
     stores_to_process = [row for _, row in full_info.iterrows()]
-    
+
     with ThreadPoolExecutor(max_workers=max_store_workers) as store_exec:
         futures = [
-            store_exec.submit(process_single_store, store, current_build, db_name) 
+            store_exec.submit(process_single_store, store, current_build)
             for store in stores_to_process
         ]
-        
-        # tqdm wraps the completion of store tasks
+
         for future in tqdm(as_completed(futures), total=len(futures), desc="Processing Stores"):
             result = future.result()
-            # Use tqdm.write so the bar stays at the bottom while logs scroll up
             if "Error" in result:
-                tqdm.write(f"⚠️ {result}")
+                tqdm.write(f"  {result}")
+
 
 if __name__ == "__main__":
     hydrate_store_menus()

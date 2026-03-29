@@ -10,6 +10,10 @@ config/airflow.cfg
 
 # Downloaded and generated data
 data/
+!data/.gitkeep
+
+# Browser screenshots / cursor temp
+*.png
 
 # Airflow runtime logs
 logs/
